@@ -1,0 +1,57 @@
+GpuFreq=control_disabled
+IP Head: 172.21.226.44:6379
+STARTING HEAD at uc2n910
+GpuFreq=control_disabled
+2025-09-06 19:59:45,571	INFO usage_lib.py:467 -- Usage stats collection is enabled by default without user confirmation because this terminal is detected to be non-interactive. To disable this, add `--disable-usage-stats` to the command that starts the cluster, or run the following command: `ray disable-usage-stats` before starting the cluster. See https://docs.ray.io/en/master/cluster/usage-stats.html for more details.
+2025-09-06 19:59:45,571	INFO scripts.py:913 -- [37mLocal node IP[39m: [1m172.21.226.44[22m
+2025-09-06 19:59:51,157	SUCC scripts.py:949 -- [32m--------------------[39m
+2025-09-06 19:59:51,157	SUCC scripts.py:950 -- [32mRay runtime started.[39m
+2025-09-06 19:59:51,157	SUCC scripts.py:951 -- [32m--------------------[39m
+2025-09-06 19:59:51,157	INFO scripts.py:953 -- [36mNext steps[39m
+2025-09-06 19:59:51,157	INFO scripts.py:956 -- To add another node to this Ray cluster, run
+2025-09-06 19:59:51,157	INFO scripts.py:959 -- [1m  ray start --address='172.21.226.44:6379'[22m
+2025-09-06 19:59:51,157	INFO scripts.py:968 -- To connect to this Ray cluster:
+2025-09-06 19:59:51,157	INFO scripts.py:970 -- [35mimport[39m[26m ray
+2025-09-06 19:59:51,157	INFO scripts.py:971 -- ray[35m.[39m[26minit(_node_ip_address[35m=[39m[26m[33m'172.21.226.44'[39m[26m)
+2025-09-06 19:59:51,157	INFO scripts.py:983 -- To submit a Ray job using the Ray Jobs CLI:
+2025-09-06 19:59:51,157	INFO scripts.py:984 -- [1m  RAY_ADDRESS='http://127.0.0.1:8265' ray job submit --working-dir . -- python my_script.py[22m
+2025-09-06 19:59:51,157	INFO scripts.py:993 -- See https://docs.ray.io/en/latest/cluster/running-applications/job-submission/index.html 
+2025-09-06 19:59:51,157	INFO scripts.py:997 -- for more information on submitting Ray jobs to the Ray cluster.
+2025-09-06 19:59:51,157	INFO scripts.py:1002 -- To terminate the Ray runtime, run
+2025-09-06 19:59:51,157	INFO scripts.py:1003 -- [1m  ray stop[22m
+2025-09-06 19:59:51,157	INFO scripts.py:1006 -- To view the status of the cluster, use
+2025-09-06 19:59:51,157	INFO scripts.py:1007 --   [1mray status[22m[26m
+2025-09-06 19:59:51,157	INFO scripts.py:1011 -- To monitor and debug Ray, view the dashboard at 
+2025-09-06 19:59:51,157	INFO scripts.py:1012 --   [1m127.0.0.1:8265[22m[26m
+2025-09-06 19:59:51,157	INFO scripts.py:1019 -- [4mIf connection to the dashboard fails, check your firewall settings and network configuration.[24m
+2025-09-06 19:59:51,158	INFO scripts.py:1123 -- [36m[1m--block[22m[39m
+2025-09-06 19:59:51,158	INFO scripts.py:1124 -- This command will now block forever until terminated by a signal.
+2025-09-06 19:59:51,158	INFO scripts.py:1127 -- Running subprocesses are monitored and a message will be printed if any of them terminate unexpectedly. Subprocesses exit with SIGTERM will be treated as graceful, thus NOT reported.
+STARTING WORKER 1 at uc2n913
+Worker will connect to: 172.21.226.44:6379
+Testing connectivity from uc2n913 to head node...
+GpuFreq=control_disabled
+PING 172.21.226.44 (172.21.226.44) 56(84) bytes of data.
+64 bytes from 172.21.226.44: icmp_seq=1 ttl=64 time=0.308 ms
+
+--- 172.21.226.44 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.308/0.308/0.308/0.000 ms
+Starting Ray worker on uc2n913...
+Worker 1 PID: 284638
+GpuFreq=control_disabled
+Worker uc2n913: Starting Ray...
+Waiting for workers to join the cluster...
+[2025-09-06 20:00:31,943 W 16437 16437] global_state_accessor.cc:435: Retrying to get node with node ID 4fde5ff50eec0dbfa95175d0683c510c5a2819faf27174ba49fd3393
+[2025-09-06 20:00:32,944 W 16437 16437] global_state_accessor.cc:435: Retrying to get node with node ID 4fde5ff50eec0dbfa95175d0683c510c5a2819faf27174ba49fd3393
+[2025-09-06 20:00:33,946 W 16437 16437] global_state_accessor.cc:435: Retrying to get node with node ID 4fde5ff50eec0dbfa95175d0683c510c5a2819faf27174ba49fd3393
+2025-09-06 20:00:30,551	INFO scripts.py:1094 -- [37mLocal node IP[39m: [1m172.21.226.47[22m
+2025-09-06 20:00:34,963	SUCC scripts.py:1110 -- [32m--------------------[39m
+2025-09-06 20:00:34,963	SUCC scripts.py:1111 -- [32mRay runtime started.[39m
+2025-09-06 20:00:34,963	SUCC scripts.py:1112 -- [32m--------------------[39m
+2025-09-06 20:00:34,963	INFO scripts.py:1114 -- To terminate the Ray runtime, run
+2025-09-06 20:00:34,963	INFO scripts.py:1115 -- [1m  ray stop[22m
+Worker uc2n913: Ray started successfully
+=== Checking Ray Worker Processes ===
+Ray processes on uc2n910:
+srun: Job 1367204 step creation temporarily disabled, retrying (Requested nodes are busy)
