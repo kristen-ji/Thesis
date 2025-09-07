@@ -182,3 +182,5 @@ tensorboard_log/
 # data
 images/
 images*
+.hf_token
+.env
