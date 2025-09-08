@@ -16,10 +16,25 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=40
+#SBATCH --mem=120G  # 120G per node
 
 # Load modules or your own conda environment here
 # module load devel/cuda/12.8 
 # module load devel/python/3.11.7-gnu-11.4
+
+# Load Hugging Face token from local file
+if [ -f ~/.hf_token ]; then
+    export HUGGINGFACE_HUB_TOKEN=$(cat ~/.hf_token)
+    export HF_TOKEN=$HUGGINGFACE_HUB_TOKEN
+fi
+
+# Load Weights & Biases API key
+if [ -f ~/.wandb_token ]; then
+    export WANDB_API_KEY=$(cat ~/.wandb_token)
+    echo "✅ Wandb API key loaded"
+else
+    echo "❌ Warning: Wandb token file not found at ~/.wandb_token"
+fi
 
 ################# DON NOT CHANGE THINGS HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###############
 # This script is a modification to the implementation suggest by gregSchwartz18 here:
@@ -49,7 +64,7 @@ export ip_head
 echo "IP Head: $ip_head"
 
 echo "STARTING HEAD at $node_1"
-# srun --nodes=1 --ntasks=1 -w $node_1 start-head.sh $ip $redis_password &
+#  Start head node - let Ray auto-detect resources
 srun --nodes=1 --ntasks=1 -w $node_1 \
   ray start --head --node-ip-address=$ip --port=6379 --redis-password=$redis_password --block &
 sleep 30
@@ -58,9 +73,26 @@ worker_num=$(($SLURM_JOB_NUM_NODES - 1)) #number of nodes other than the head no
 for ((i = 1; i <= $worker_num; i++)); do
   node_i=${nodes_array[$i]}
   echo "STARTING WORKER $i at $node_i"
-  srun --nodes=1 --ntasks=1 -w $node_i ray start --address $ip_head --redis-password=$redis_password --block &
-  sleep 5
+  echo "Worker will connect to: $ip_head"
+  
+  # Test connectivity first
+  echo "Testing connectivity from $node_i to head node..."
+  srun --nodes=1 --ntasks=1 -w $node_i ping -c 1 $ip || echo "Ping failed from $node_i"
+  
+  # Start worker nodes - let Ray auto-detect resources
+  echo "Starting Ray worker on $node_i..."
+  srun --nodes=1 --ntasks=1 -w $node_i \
+    ray start --address $ip_head --redis-password=$redis_password --block &
+  
+  # Store the PID to check later
+  worker_pid=$!
+  echo "Worker $i PID: $worker_pid"
+  sleep 10
 done
+
+# Wait for all workers to join
+echo "Waiting for workers to join the cluster..."
+sleep 30
 
 ##############################################################################################
 

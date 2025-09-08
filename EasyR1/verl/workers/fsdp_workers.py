@@ -202,7 +202,7 @@ class FSDPWorker(Worker):
                 model_config.model_path,
                 config=self.model_config,
                 torch_dtype=torch_dtype,
-                attn_implementation="flash_attention_2",
+                attn_implementation="eager",
                 device_map="cpu" if fsdp_config.enable_rank0_init else "cuda",
                 low_cpu_mem_usage=True,
                 trust_remote_code=model_config.trust_remote_code,
@@ -212,7 +212,7 @@ class FSDPWorker(Worker):
                 model = AutoClass.from_config(
                     self.model_config,
                     torch_dtype=torch_dtype,
-                    attn_implementation="flash_attention_2",
+                    attn_implementation="eager",
                     trust_remote_code=model_config.trust_remote_code,
                 )
 

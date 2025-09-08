@@ -4,6 +4,13 @@ set -x
 
 export PYTHONUNBUFFERED=1
 
+# Load Hugging Face token for training
+if [ -f ~/.hf_token ]; then
+    export HUGGINGFACE_HUB_TOKEN=$(cat ~/.hf_token)
+    export HF_TOKEN=$HUGGINGFACE_HUB_TOKEN
+    echo "✅ Training: HF Token loaded"
+fi
+
 MODEL_PATH=Qwen/Qwen2.5-VL-7B-Instruct  # replace it with your local file path
 
 python3 -m verl.trainer.main \

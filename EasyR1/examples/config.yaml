@@ -7,11 +7,11 @@ data:
   video_key: videos
   image_dir: null
   video_fps: 2.0
-  max_prompt_length: 2048
-  max_response_length: 2048
-  rollout_batch_size: 512  # equivalent to verl's data.train_batch_size
+  max_prompt_length: 1536  # DECREASED from 2048 (memory optimization)
+  max_response_length: 1536  # DECREASED from 2048 (memory optimization)
+  rollout_batch_size: 256  # DECREASED from 512 (memory optimization) - equivalent to verl's data.train_batch_size
   mini_rollout_batch_size: null  # equivalent to verl's data.gen_batch_size
-  val_batch_size: 1024
+  val_batch_size: 512  # DECREASED from 1024 (memory optimization)
   format_prompt: ./examples/format_prompt/math.jinja
   override_chat_template: null
   shuffle: true
@@ -33,9 +33,9 @@ algorithm:
 
 worker:
   actor:
-    global_batch_size: 128  # equivalent to verl's actor.ppo_mini_batch_size
-    micro_batch_size_per_device_for_update: 1  # equivalent to verl's actor.ppo_micro_batch_size_per_gpu
-    micro_batch_size_per_device_for_experience: 2  # equivalent to verl's rollout.log_prob_micro_batch_size_per_gpu
+    global_batch_size: 64  # DECREASED from 128 (memory optimization) - equivalent to verl's actor.ppo_mini_batch_size
+    micro_batch_size_per_device_for_update: 1  # UNCHANGED - equivalent to verl's actor.ppo_micro_batch_size_per_gpu
+    micro_batch_size_per_device_for_experience: 1  # DECREASED from 2 (memory optimization) - equivalent to verl's rollout.log_prob_micro_batch_size_per_gpu
     max_grad_norm: 1.0
     padding_free: true
     dynamic_batching: true
@@ -52,21 +52,21 @@ worker:
       lr_warmup_ratio: 0.0
     fsdp:
       enable_full_shard: true
-      enable_cpu_offload: false
+      enable_cpu_offload: false  # If true, then it conflicts with gradient accumulation)
       enable_rank0_init: true
     offload:
-      offload_params: true  # true: more CPU memory; false: more GPU memory
-      offload_optimizer: true  # true: more CPU memory; false: more GPU memory
+      offload_params: false  # DECREASED from true (avoid redundant offloading with FSDP)
+      offload_optimizer: true  # keep optimizer offloading - less frequent access
 
   rollout:
-    n: 5
-    temperature: 1.0
-    top_p: 1.0
-    limit_images: 0
-    gpu_memory_utilization: 0.6
-    enforce_eager: false
-    enable_chunked_prefill: false
-    tensor_parallel_size: 2
+    n: 3  # DECREASED from 5 (memory optimization)
+    temperature: 1.0  # UNCHANGED
+    top_p: 1.0  # UNCHANGED
+    limit_images: 0  # UNCHANGED
+    gpu_memory_utilization: 0.4  # DECREASED from 0.6 (memory optimization)
+    enforce_eager: false  # UNCHANGED
+    enable_chunked_prefill: false  # UNCHANGED
+    tensor_parallel_size: 2  # UNCHANGED
     disable_tqdm: false
     val_override_config:
       temperature: 0.6
@@ -91,8 +91,8 @@ trainer:
   project_name: easy_r1
   experiment_name: qwen2_5_7b_math_grpo
   logger: ["console", "wandb"]
-  nnodes: 1
-  n_gpus_per_node: 8
+  nnodes: 2  # INCREASED from 1 (corrected for actual setup)
+  n_gpus_per_node: 4  # DECREASED from 8 (corrected for actual setup)
   max_try_make_batch: 20  # -1 means no limit
   val_freq: 5  # -1 to disable
   val_before_train: true

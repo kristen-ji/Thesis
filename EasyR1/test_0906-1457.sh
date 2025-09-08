@@ -16,6 +16,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=40
+#SBATCH --mem=120G  # 120G per node
 
 # Load modules or your own conda environment here
 # module load devel/cuda/12.8 
@@ -24,6 +25,14 @@
 if [ -f ~/.hf_token ]; then
     export HUGGINGFACE_HUB_TOKEN=$(cat ~/.hf_token)
     export HF_TOKEN=$HUGGINGFACE_HUB_TOKEN
+fi
+
+# Load Weights & Biases API key
+if [ -f ~/.wandb_token ]; then
+    export WANDB_API_KEY=$(cat ~/.wandb_token)
+    echo "✅ Wandb API key loaded"
+else
+    echo "❌ Warning: Wandb token file not found at ~/.wandb_token"
 fi
 
 ################# DON NOT CHANGE THINGS HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###############
