@@ -99,9 +99,25 @@ class vLLMRollout(BaseRollout):
 
         engine_kwargs = {}
         if processor is not None:  # only VLMs have processor
+            # Note: mm_processor_cache_gb parameter is not supported in current vLLM version
+            # Using disable_mm_preprocessor_cache instead for compatibility
             engine_kwargs["disable_mm_preprocessor_cache"] = True
             if config.limit_images:
                 engine_kwargs["limit_mm_per_prompt"] = {"image": config.limit_images}
+
+        # Load HF token for vLLM and set environment variables
+        try:
+            with open(os.path.expanduser("~/.cache/huggingface/token"), "r") as f:
+                hf_token = f.read().strip()
+                os.environ["HF_TOKEN"] = hf_token
+                os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        except FileNotFoundError:
+            print("Warning: Could not load HF token for vLLM")
+        
+        # Set environment variables to avoid flashinfer compatibility issues with Python 3.9
+        os.environ["VLLM_USE_V1"] = "0"  # Disable vLLM v1 engine
+        os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"  # Use FlashAttention instead of FlashInfer
 
         self.inference_engine = LLM(
             model=model_path,

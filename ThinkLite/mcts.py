@@ -353,7 +353,10 @@ def main(args):
     eval_llm_tokenizer = AutoTokenizer.from_pretrained(args.eval_model_name)
     final_response = []
 
-    df = pd.read_parquet(args.data_pths, engine='pyarrow')  # Your path of dataset
+    #df = pd.read_parquet(args.data_pths, engine='pyarrow')  # Your path of dataset
+    # Load dataset from Hugging Face
+    ds = load_dataset("russwang/ThinkLite-VL-70k")
+    df = ds['train'].to_pandas()  # Convert to pandas DataFrame
     datas = df.to_dict(orient='records')
 
     data_chunk = get_chunk(datas, args.num_chunks, args.chunk_idx)
@@ -393,8 +396,9 @@ if __name__ == "__main__":
     parser.add_argument("--eval_model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--data_pths", type=str, nargs='+', default="None")
     parser.add_argument("--output_file", type=str, default="answer.jsonl")
-    parser.add_argument("--max_num_iterations", type=int, default=50)
-    parser.add_argument("--num-chunks", type=int, default=1)
+    #parser.add_argument("--max_num_iterations", type=int, default=50)
+    parser.add_argument("--max_num_iterations", type=int, default=5)
+    parser.add_argument("--num-chunks", type=int, default=8)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--gpu-id", type=int, default=0)
     args = parser.parse_args()

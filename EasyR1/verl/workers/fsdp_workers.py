@@ -15,6 +15,7 @@
 The main entry point to run the PPO algorithm
 """
 
+import os
 from typing import Literal, Optional, Union, cast
 
 import numpy as np
@@ -155,15 +156,25 @@ class FSDPWorker(Worker):
         role: Literal["actor", "critic", "ref"],
     ) -> None:
         if role != "ref":  # ref model's tokenizer is same as actor
+            # Load HF token for FSDP workers
+            hf_token = None
+            try:
+                with open(os.path.expanduser("~/.cache/huggingface/token"), "r") as f:
+                    hf_token = f.read().strip()
+            except FileNotFoundError:
+                print("Warning: Could not load HF token for FSDP worker")
+            
             self.tokenizer = get_tokenizer(
                 model_config.tokenizer_path,
                 trust_remote_code=model_config.trust_remote_code,
                 use_fast=True,
+                token=hf_token,
             )
             self.processor = get_processor(
                 model_config.tokenizer_path,
                 trust_remote_code=model_config.trust_remote_code,
                 use_fast=True,
+                token=hf_token,
             )
             self.model_config = AutoConfig.from_pretrained(
                 model_config.model_path,
@@ -185,10 +196,10 @@ class FSDPWorker(Worker):
             apply_ulysses_patch(self.model_config.model_type)
             self.print_rank0("Ulysses patch applied!")
 
-        if fsdp_config.torch_dtype is None:
+        if fsdp_config.dtype is None:
             torch_dtype = torch.float32 if role != "ref" else torch.bfloat16
         else:
-            torch_dtype = PrecisionType.to_dtype(fsdp_config.torch_dtype)
+            torch_dtype = PrecisionType.to_dtype(fsdp_config.dtype)
 
         if role == "critic":
             AutoClass = AutoModelForTokenClassification

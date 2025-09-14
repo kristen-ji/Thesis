@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import json
+import os
+
 
 import ray
 from omegaconf import OmegaConf
@@ -32,8 +34,25 @@ class Runner:
     """A runner for RL training."""
 
     def run(self, config: PPOConfig):
+        # Load HF token in the Runner process
+        try:
+            with open(os.path.expanduser("~/.cache/huggingface/token"), "r") as f:
+                hf_token = f.read().strip()
+                os.environ["HF_TOKEN"] = hf_token
+                os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+        except FileNotFoundError:
+            print("Warning: HF token not found in Runner process")
+        
         # print config
         print(json.dumps(config.to_dict(), indent=2))
+
+        # Get HF token for direct passing to transformers
+        hf_token_for_transformers = None
+        try:
+            with open(os.path.expanduser("~/.cache/huggingface/token"), "r") as f:
+                hf_token_for_transformers = f.read().strip()
+        except FileNotFoundError:
+            print("Warning: Could not load HF token for transformers")
 
         # instantiate tokenizer
         tokenizer = get_tokenizer(
@@ -41,12 +60,14 @@ class Runner:
             override_chat_template=config.data.override_chat_template,
             trust_remote_code=config.worker.actor.model.trust_remote_code,
             use_fast=True,
+            token=hf_token_for_transformers,
         )
         processor = get_processor(
             config.worker.actor.model.model_path,
             override_chat_template=config.data.override_chat_template,
             trust_remote_code=config.worker.actor.model.trust_remote_code,
             use_fast=True,
+            token=hf_token_for_transformers,
         )
 
         # define worker classes
@@ -107,6 +128,19 @@ def main():
     ppo_config: PPOConfig = OmegaConf.to_object(ppo_config)
     ppo_config.deep_post_init()
 
+    # Load HF token for Ray workers
+    hf_token = None
+    try:
+        with open(os.path.expanduser("~/.cache/huggingface/token"), "r") as f:
+            hf_token = f.read().strip()
+    except FileNotFoundError:
+        print("Warning: HF token not found in ~/.cache/huggingface/token")
+    
+    # Set environment variables for current process
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+        os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+    
     if not ray.is_initialized():
         runtime_env = {
             "env_vars": {
@@ -114,11 +148,41 @@ def main():
                 "NCCL_DEBUG": "WARN",
                 "VLLM_LOGGING_LEVEL": "WARN",
                 "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
-                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
                 "PYTHONUNBUFFERED": "1",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                # Memory optimization settings
+                "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128",
+                "CUDA_LAUNCH_BLOCKING": "0",
+                "TORCH_CUDNN_V8_API_ENABLED": "1",
+                # Hugging Face Hub settings for vision models
+                "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                "HF_HUB_DISABLE_TELEMETRY": "1",
+                "TRANSFORMERS_OFFLINE": "0",
+                "TRANSFORMERS_VERBOSITY": "error",
+                # Force trust_remote_code for all transformers operations
+                "TRANSFORMERS_SAFE_SERIALIZATION": "false",
+                # Patch vLLM to use trust_remote_code
+                "VLLM_USE_MODELSCOPE": "false",
+                # Disable Ray log deduplication for better debugging
+                "RAY_DEDUP_LOGS": "0",
+                # Network stability improvements
+                "RAY_DISABLE_IMPORT_WARNING": "1",
+                "RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE": "1",
+                "RAY_OBJECT_STORE_MEMORY": "1000000000",  # 1GB object store
+                "RAY_TASK_RETRY_DELAY": "5",  # Retry failed tasks after 5 seconds
+                "RAY_TASK_MAX_RETRIES": "3",  # Retry up to 3 times
             }
         }
+        
+        # Add HF token to runtime environment if available
+        if hf_token:
+            runtime_env["env_vars"]["HF_TOKEN"] = hf_token
+            runtime_env["env_vars"]["HUGGINGFACE_HUB_TOKEN"] = hf_token
+        else:
+            # Set a dummy token to avoid authentication issues with public models
+            runtime_env["env_vars"]["HUGGINGFACE_HUB_TOKEN"] = "hf_dummy_token_for_public_models"
+            runtime_env["env_vars"]["HF_TOKEN"] = "hf_dummy_token_for_public_models"
+        
         ray.init(runtime_env=runtime_env)
 
     runner = Runner.remote()

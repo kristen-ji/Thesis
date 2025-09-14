@@ -7,11 +7,11 @@ data:
   video_key: videos
   image_dir: null
   video_fps: 2.0
-  max_prompt_length: 1536  # DECREASED from 2048 (memory optimization)
-  max_response_length: 1536  # DECREASED from 2048 (memory optimization)
-  rollout_batch_size: 256  # DECREASED from 512 (memory optimization) - equivalent to verl's data.train_batch_size
+  max_prompt_length: 1024  # FURTHER DECREASED from 1536 (memory optimization)
+  max_response_length: 1024  # FURTHER DECREASED from 1536 (memory optimization)
+  rollout_batch_size: 128  # FURTHER DECREASED from 256 (memory optimization) 
   mini_rollout_batch_size: null  # equivalent to verl's data.gen_batch_size
-  val_batch_size: 512  # DECREASED from 1024 (memory optimization)
+  val_batch_size: 256  # FURTHER DECREASED from 512 (memory optimization)
   format_prompt: ./examples/format_prompt/math.jinja
   override_chat_template: null
   shuffle: true
@@ -33,41 +33,43 @@ algorithm:
 
 worker:
   actor:
-    global_batch_size: 64  # DECREASED from 128 (memory optimization) - equivalent to verl's actor.ppo_mini_batch_size
+    global_batch_size: 32  # FURTHER DECREASED from 64 (memory optimization) - equivalent to verl's actor.ppo_mini_batch_size
     micro_batch_size_per_device_for_update: 1  # UNCHANGED - equivalent to verl's actor.ppo_micro_batch_size_per_gpu
-    micro_batch_size_per_device_for_experience: 1  # DECREASED from 2 (memory optimization) - equivalent to verl's rollout.log_prob_micro_batch_size_per_gpu
+    micro_batch_size_per_device_for_experience: 1  # UNCHANGED - equivalent to verl's rollout.log_prob_micro_batch_size_per_gpu
     max_grad_norm: 1.0
-    padding_free: true
+    padding_free: false
     dynamic_batching: true
     ulysses_size: 1
     model:
-      model_path: Qwen/Qwen2.5-7B-Instruct
+      model_path: Qwen/Qwen2.5-VL-7B-Instruct
       enable_gradient_checkpointing: true
-      trust_remote_code: false
+      trust_remote_code: true  # ENABLED for vision models
       freeze_vision_tower: false
     optim:
       lr: 1.0e-6
       weight_decay: 1.0e-2
-      strategy: adamw  # {adamw, adamw_bf16}
+      strategy: adamw_bf16  # {adamw, adamw_bf16}
       lr_warmup_ratio: 0.0
     fsdp:
       enable_full_shard: true
       enable_cpu_offload: false  # If true, then it conflicts with gradient accumulation)
       enable_rank0_init: true
+      dtype: bf16
     offload:
       offload_params: false  # DECREASED from true (avoid redundant offloading with FSDP)
       offload_optimizer: true  # keep optimizer offloading - less frequent access
 
   rollout:
-    n: 3  # DECREASED from 5 (memory optimization)
-    temperature: 1.0  # UNCHANGED
-    top_p: 1.0  # UNCHANGED
-    limit_images: 0  # UNCHANGED
-    gpu_memory_utilization: 0.4  # DECREASED from 0.6 (memory optimization)
-    enforce_eager: false  # UNCHANGED
-    enable_chunked_prefill: false  # UNCHANGED
-    tensor_parallel_size: 2  # UNCHANGED
+    n: 2  # FURTHER DECREASED from 3 (memory optimization for GRPO)
+    temperature: 1.0  
+    top_p: 1.0  
+    limit_images: 1  # Allow 1 image per prompt for vision-language model
+    gpu_memory_utilization: 0.65  # INCREASED from 0.3 to provide more KV cache memory
+    enforce_eager: false  
+    enable_chunked_prefill: false  
+    tensor_parallel_size: 4  # INCREASED from 2 to distribute model across more GPUs and reduce memory per GPU  
     disable_tqdm: false
+    trust_remote_code: true  # ENABLED for vision models in vLLM
     val_override_config:
       temperature: 0.6
       top_p: 0.95
@@ -79,7 +81,7 @@ worker:
       enable_cpu_offload: true  # true: more CPU memory; false: more GPU memory
       enable_rank0_init: true
     offload:
-      offload_params: false
+      offload_params: true  # ENABLED for additional memory savings
 
   reward:
     reward_type: batch

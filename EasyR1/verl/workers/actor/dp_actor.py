@@ -292,8 +292,17 @@ class DataParallelPPOActor(BasePPOActor):
                         "actor/ppo_kl": pg_metrics["ppo_kl"],
                     }
                     append_to_dict(metrics, batch_metrics)
+                    
+                    # Clear intermediate variables to free memory
+                    del loss, pg_loss
+                    if hasattr(self, 'config') and hasattr(self.config, 'use_kl_loss') and self.config.use_kl_loss:
+                        del kl_loss
 
                 grad_norm = self._optimizer_step()
                 append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
+                
+                # Clear CUDA cache after optimizer step to free memory
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         return metrics

@@ -277,6 +277,17 @@ class RayWorkerGroup(WorkerGroup):
                     "RAY_LOCAL_WORLD_SIZE": str(local_world_size),
                     "RAY_LOCAL_RANK": str(local_rank),
                 }
+                
+                # Add HF token to Ray worker environment variables
+                try:
+                    import os
+                    with open(os.path.expanduser("~/.cache/huggingface/token"), "r") as f:
+                        hf_token = f.read().strip()
+                        env_vars["HF_TOKEN"] = hf_token
+                        env_vars["HUGGINGFACE_HUB_TOKEN"] = hf_token
+                        env_vars["HUGGING_FACE_HUB_TOKEN"] = hf_token
+                except FileNotFoundError:
+                    print("Warning: Could not load HF token for Ray workers")
                 if rank != 0:
                     env_vars["MASTER_ADDR"] = self._master_addr
                     env_vars["MASTER_PORT"] = self._master_port

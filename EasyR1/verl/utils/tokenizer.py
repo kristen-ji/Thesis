@@ -14,6 +14,121 @@
 """Utils for tokenization."""
 
 from typing import Optional
+import os
+
+# Apply comprehensive patch BEFORE importing transformers
+def patch_transformers_for_trust_remote_code():
+    """Monkey patch transformers to ensure trust_remote_code=True is passed everywhere."""
+    try:
+        # Patch cached_files and cached_file to ensure trust_remote_code is passed
+        try:
+            from transformers.utils.hub import cached_files, cached_file
+            original_cached_files = cached_files
+            original_cached_file = cached_file
+            
+            def patched_cached_files(path_or_repo_id, filenames, **kwargs):
+                if 'trust_remote_code' not in kwargs:
+                    kwargs['trust_remote_code'] = True
+                # Also ensure token is passed if not present
+                if 'token' not in kwargs:
+                    import os
+                    token = os.getenv('HUGGINGFACE_HUB_TOKEN') or os.getenv('HF_TOKEN')
+                    if token:
+                        kwargs['token'] = token
+                return original_cached_files(path_or_repo_id, filenames, **kwargs)
+            
+            def patched_cached_file(path_or_repo_id, filename, **kwargs):
+                if 'trust_remote_code' not in kwargs:
+                    kwargs['trust_remote_code'] = True
+                # Also ensure token is passed if not present
+                if 'token' not in kwargs:
+                    import os
+                    token = os.getenv('HUGGINGFACE_HUB_TOKEN') or os.getenv('HF_TOKEN')
+                    if token:
+                        kwargs['token'] = token
+                return original_cached_file(path_or_repo_id, filename, **kwargs)
+            
+            # Replace the functions in transformers.utils.hub module
+            import transformers.utils.hub as hub_module
+            hub_module.cached_files = patched_cached_files
+            hub_module.cached_file = patched_cached_file
+            
+        except Exception as e:
+            print(f"⚠️ Could not patch cached_files/cached_file: {e}")
+        
+        # Also patch hf_hub_download directly as a fallback
+        try:
+            from huggingface_hub import hf_hub_download
+            original_hf_hub_download = hf_hub_download
+            
+            def patched_hf_hub_download(repo_id, filename, **kwargs):
+                # Don't pass trust_remote_code to hf_hub_download as it doesn't accept it
+                # Just ensure token is passed if not present
+                if 'token' not in kwargs:
+                    import os
+                    token = os.getenv('HUGGINGFACE_HUB_TOKEN') or os.getenv('HF_TOKEN')
+                    if token:
+                        kwargs['token'] = token
+                return original_hf_hub_download(repo_id, filename, **kwargs)
+            
+            # Replace the function in huggingface_hub module
+            import huggingface_hub
+            huggingface_hub.hf_hub_download = patched_hf_hub_download
+            
+        except Exception as e:
+            print(f"⚠️ Could not patch hf_hub_download: {e}")
+        
+        # Patch video processor loading as well
+        try:
+            from transformers.video_processing_utils import BaseVideoProcessor
+            original_get_video_processor_dict = BaseVideoProcessor.get_video_processor_dict
+            
+            @classmethod
+            def patched_get_video_processor_dict(cls, pretrained_model_name_or_path, **kwargs):
+                if 'trust_remote_code' not in kwargs:
+                    kwargs['trust_remote_code'] = True
+                # Also ensure token is passed if not present
+                if 'token' not in kwargs:
+                    import os
+                    token = os.getenv('HUGGINGFACE_HUB_TOKEN') or os.getenv('HF_TOKEN')
+                    if token:
+                        kwargs['token'] = token
+                return original_get_video_processor_dict(pretrained_model_name_or_path, **kwargs)
+            
+            BaseVideoProcessor.get_video_processor_dict = patched_get_video_processor_dict
+            
+        except Exception as e:
+            print(f"⚠️ Could not patch video processor: {e}")
+        
+        # Patch ImageProcessingMixin.get_image_processor_dict directly
+        try:
+            from transformers.image_processing_base import ImageProcessingMixin
+            original_get_image_processor_dict = ImageProcessingMixin.get_image_processor_dict
+            
+            @classmethod
+            def patched_get_image_processor_dict(cls, pretrained_model_name_or_path, **kwargs):
+                if 'trust_remote_code' not in kwargs:
+                    kwargs['trust_remote_code'] = True
+                if 'token' not in kwargs:
+                    import os
+                    token = os.getenv('HUGGINGFACE_HUB_TOKEN') or os.getenv('HF_TOKEN')
+                    if token:
+                        kwargs['token'] = token
+                return original_get_image_processor_dict(pretrained_model_name_or_path, **kwargs)
+            
+            ImageProcessingMixin.get_image_processor_dict = patched_get_image_processor_dict
+            
+        except Exception as e:
+            print(f"⚠️ Could not patch ImageProcessingMixin: {e}")
+        
+    except Exception as e:
+        print(f"⚠️ Could not patch transformers in tokenizer.py: {e}")
+        import traceback
+        traceback.print_exc()
+
+# Apply the patch immediately
+print(f"🔧 Applying patches from process {os.getpid()}")
+patch_transformers_for_trust_remote_code()
 
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizer, ProcessorMixin
 
@@ -39,6 +154,10 @@ def get_tokenizer(model_path: str, override_chat_template: Optional[str] = None,
 
 def get_processor(model_path: str, override_chat_template: Optional[str] = None, **kwargs) -> Optional[ProcessorMixin]:
     """Create a huggingface pretrained processor."""
+    # Ensure trust_remote_code is set for vision models
+    if 'trust_remote_code' not in kwargs:
+        kwargs['trust_remote_code'] = True
+    
     processor = AutoProcessor.from_pretrained(model_path, **kwargs)
     if override_chat_template is not None:
         processor.chat_template = override_chat_template
