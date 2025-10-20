@@ -1,0 +1,112 @@
+data:
+  train_files: hiyouga/geometry3k@train
+  val_files: hiyouga/geometry3k@test
+  prompt_key: problem
+  answer_key: answer
+  image_key: images
+  video_key: videos
+  image_dir: null
+  video_fps: 2.0
+  max_prompt_length: 512 
+  max_response_length: 512
+  rollout_batch_size: 512 # Original value (verl's data.train_batch_size)
+  mini_rollout_batch_size: null  # equivalent to verl's data.gen_batch_size
+  val_batch_size: 1024  
+  format_prompt: ./examples/format_prompt/math.jinja
+  override_chat_template: null
+  shuffle: true
+  seed: 1
+  min_pixels: 784  # 28x28 minimum (Qwen2.5-VL processor requirement)  
+  max_pixels: 16384  # 128x128 maximum (reduced to prevent OOM)
+  filter_overlong_prompts: true
+
+algorithm:
+  adv_estimator: grpo
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 5.0e-2 #1.0e-2
+  online_filtering: false  # dapo filter groups
+  filter_key: overall
+  filter_low: 0.01
+  filter_high: 0.99
+
+worker:
+  actor:
+    global_batch_size: 128 # Original value (verl's actor.ppo_mini_batch_size)
+    micro_batch_size_per_device_for_update: 1  # equivalent to verl's actor.ppo_micro_batch_size_per_gpu
+    micro_batch_size_per_device_for_experience: 2  # equivalent to verl's rollout.log_prob_micro_batch_size_per_gpu
+    max_grad_norm: 1.0
+    padding_free: false
+    dynamic_batching: true
+    ulysses_size: 1
+    model:
+      model_path: /hkfs/work/workspace/scratch/st_st190232-myspace/models/Qwen2.5-VL-7B-Instruct
+      enable_gradient_checkpointing: true
+      trust_remote_code: true  # ENABLED for Qwen2.5-VL model (required for proper loading)
+      freeze_vision_tower: false
+    optim:
+      lr: 5.0e-6 #1.0e-6
+      weight_decay: 1.0e-2
+      strategy: adamw_bf16  # {adamw, adamw_bf16}
+      lr_warmup_ratio: 0.0
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false  # DISABLED to avoid conflicts with gradient accumulation
+      enable_rank0_init: true
+      dtype: bf16
+    offload:
+      offload_params: true  # ENABLED for maximum memory savings
+      offload_optimizer: true  # keep optimizer offloading - less frequent access
+
+  rollout:
+    n: 2 
+    temperature: 0.7  # Original value is 1.0
+    top_p: 0.9  # Original value is 1.0
+    limit_images: 0  # DISABLED - allow multiple images for better multimodal understanding
+    gpu_memory_utilization: 0.4  # Original value is 0.6, Lower memory usage to prevent OOM during training
+    enforce_eager: true  # ENABLED to avoid TorchDynamo compilation issues
+    enable_chunked_prefill: false  # DISABLED to avoid MRoPE indexing issues
+    tensor_parallel_size: 4  # 4 GPUs per node (28 heads / 4 = 7 heads per GPU)
+    disable_tqdm: false
+    trust_remote_code: true  # ENABLED for Qwen2.5-VL model (required for proper loading)
+    max_model_len: 4096  # INCREASED: Higher context length for multimodal tokens
+    disable_log_stats: true  # Disable logging to reduce tensor dumping
+    max_num_batched_tokens: 4096  # INCREASED: Higher batch size for multimodal tokens
+    val_override_config:
+      temperature: 0.7  # Increased temperature for validation
+      top_p: 0.9  # Increased top_p for validation
+      n: 1
+
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false  # DISABLED to avoid conflicts with gradient accumulation
+      enable_rank0_init: true
+    offload:
+      offload_params: true  # ENABLED to reduce GPU memory usage
+      offload_optimizer: true  # Offload optimizer to CPU for reference model
+
+  reward:
+    reward_type: batch
+    reward_function: ./examples/reward_function/math.py:compute_score
+
+trainer:
+  total_epochs: 15
+  max_steps: null
+  project_name: easy_r1
+  experiment_name: qwen2_5_7b_math_grpo
+  logger: ["console", "wandb"]
+  nnodes: 1  # 2 nodes total
+  n_gpus_per_node: 4  # 4 GPUs per node = 8 GPUs total
+  max_try_make_batch: 20  # -1 means no limit
+  val_freq: 5  # -1 to disable
+  val_before_train: true
+  val_only: false
+  val_generations_to_log: 3
+  save_freq: 5  # -1 to disable
+  save_limit: 3  # -1 to disable
+  save_model_only: false
+  save_checkpoint_path: null
+  load_checkpoint_path: null
+  find_last_checkpoint: false

@@ -1,0 +1,10 @@
+.wandb_token
+
+ThinkLite/**/*.log
+ThinkLite/output_files/
+EasyR1/GRPO_7B_training_*.log
+EasyR1/GRPO_7B_training_*.error
+EasyR1-New/EasyR1/*.log
+EasyR1-New/EasyR1/*.error
+**/*.parquet
+**/eval_files/**
