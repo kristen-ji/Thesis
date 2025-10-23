@@ -7,8 +7,9 @@
 #SBATCH --job-name=GRPO_7B_training
 #SBATCH --output=GRPO_7B_training_%A_%a.log
 #SBATCH --error=GRPO_7B_training_%A_%a.error
-#SBATCH --time=35:00:00
+#SBATCH --time=15:00:00
 #SBATCH --account=hk-project-pai00072
+
 
 ### This script works for any number of nodes, Ray will find and manage all resources
 #SBATCH --nodes=1
@@ -28,10 +29,13 @@ export RAY_TMPDIR=/tmp/ray_${USER}
 mkdir -p /tmp/ray_${USER}
 
 export RAY_DEDUP_LOGS=0
-
-# Ensure vLLM uses CUDA and enable debug logs for device detection (7B run)
-#export VLLM_DEVICE=cuda
+# Ensure vLLM debug logs for device detection (7B run)
 export VLLM_LOGGING_LEVEL=DEBUG
+# Prevent vLLM from checking GPUs at import time in driver process
+export VLLM_SKIP_WARMUP=1
+# Enable NCCL debugging for distributed training issues
+export NCCL_DEBUG=INFO
+export NCCL_ASYNC_ERROR_HANDLING=1
 
 # Set up workspace directory for storage
 WORKSPACE_DIR=/hkfs/work/workspace/scratch/st_st190232-myspace
@@ -45,24 +49,11 @@ export WORKSPACE_TEMP_DIR=$WORKSPACE_DIR/temp_data
 export WORKSPACE_CACHE_DIR=$WORKSPACE_DIR/cache
 export WORKSPACE_CHECKPOINT_DIR=$WORKSPACE_DIR/checkpoints
 
+# Set Hugging Face caches to node-local TMPDIR for high I/O
+export HF_HOME="$TMPDIR/hf_cache"
+export HF_HUB_CACHE="$TMPDIR/hf_cache"
+export HF_DATASETS_CACHE="$TMPDIR/hf_cache"
 
-# Set Hugging Face cache to workspace storage
-export HF_HOME=$WORKSPACE_CACHE_DIR
-export HF_HUB_CACHE=$WORKSPACE_CACHE_DIR
-export HF_DATASETS_CACHE=$WORKSPACE_CACHE_DIR
-
-# Load Hugging Face token from cache
-# export HUGGINGFACE_HUB_TOKEN=$(cat ~/.cache/huggingface/token)
-# export HF_TOKEN=$HUGGINGFACE_HUB_TOKEN
-# echo "✅ HF Token loaded from cache"
-
-# # Load Weights & Biases API key
-# if [ -f ~/.wandb_token ]; then
-#     export WANDB_API_KEY=$(cat ~/.wandb_token)
-#     echo "✅ Wandb API key loaded"
-# else
-#     echo "❌ Warning: Wandb token file not found at ~/.wandb_token"
-# fi
 
 ################# DON NOT CHANGE THINGS HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###############
 # This script is a modification to the implementation suggest by gregSchwartz18 here:
@@ -93,9 +84,10 @@ echo "IP Head: $ip_head"
 
 echo "STARTING HEAD at $node_1"
 # Start head node with explicit GPU specification
+# Object store limited to 30% of system RAM (default is 30%)
 srun --nodes=1 --ntasks=1 -w $node_1 \
   ray start --head --node-ip-address=$ip --port=6379 --redis-password=$redis_password \
-  --num-gpus=4 --block &
+  --num-gpus=4 --object-store-memory=100000000000 --block &
 sleep 30
 
 worker_num=$(($SLURM_JOB_NUM_NODES - 1)) #number of nodes other than the head node
@@ -108,7 +100,7 @@ for ((i = 1; i <= $worker_num; i++)); do
   # Start worker nodes with explicit GPU specification
   echo "Starting Ray worker on $node_i..."
   srun --nodes=1 --ntasks=1 -w $node_i \
-    ray start --address $ip_head --redis-password=$redis_password --num-gpus=4 --block &
+    ray start --address $ip_head --redis-password=$redis_password --num-gpus=4 --object-store-memory=100000000000 --block &
   
   # Store the PID to check later
   worker_pid=$!
@@ -124,5 +116,7 @@ sleep 30
 echo "Checking Ray cluster status..."
 ray status --address $ip_head --redis-password $redis_password
 
+# Make GPU 0 visible to driver process for vLLM import (Ray workers will get their own GPUs)
+export CUDA_VISIBLE_DEVICES=0
 
 bash examples/qwen2_5_vl_7b_geo3k_grpo.sh
