@@ -57,4 +57,5 @@ python mcts.py \
     --num-chunks $num_chunks \
     --chunk-idx $chunk_idx \
     --gpu-id 0 \
-    --max_num_iterations 8  # Optimized for speed vs quality balance
+    --max_num_iterations 5
+    #--max_num_iterations 8  # Optimized for speed vs quality balance

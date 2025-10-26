@@ -114,9 +114,10 @@ sleep 30
 
 # Quick check to ensure cluster is ready
 echo "Checking Ray cluster status..."
-ray status --address $ip_head --redis-password $redis_password
+#ray status --address $ip_head --redis-password $redis_password
 
-# Make GPU 0 visible to driver process for vLLM import (Ray workers will get their own GPUs)
-export CUDA_VISIBLE_DEVICES=0
+# Make all GPUs visible to avoid vLLM import errors, but don't set specific device
+# Ray workers manage their own GPU assignments
+unset CUDA_VISIBLE_DEVICES
 
 bash examples/qwen2_5_vl_7b_geo3k_grpo.sh

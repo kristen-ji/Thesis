@@ -6,8 +6,8 @@ MODEL_PATH=Qwen/Qwen2.5-VL-7B-Instruct  # replace it with your local file path
 
 python3 -m verl.trainer.main \
     config=examples/config.yaml \
-    data.train_files=/hkfs/home/project/hk-project-pai00012/st_st190232/use-ray-with-slurm/EasyR1/combined_mcts_1to11.parquet \
-    data.val_files=/hkfs/home/project/hk-project-pai00012/st_st190232/use-ray-with-slurm/EasyR1/combined_mcts_12to16.parquet \
+    data.train_files=/hkfs/home/project/hk-project-pai00012/st_st190232/use-ray-with-slurm/EasyR1/output1to10.parquet \
+    data.val_files=/hkfs/home/project/hk-project-pai00012/st_st190232/use-ray-with-slurm/EasyR1/output11to16.parquet \
     data.rollout_batch_size=256 \
     data.mini_rollout_batch_size=128 \
     worker.actor.global_batch_size=64 \

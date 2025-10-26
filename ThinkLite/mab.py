@@ -19,6 +19,7 @@ import random
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import argparse
 from tqdm import tqdm
+import torch.nn.functional as F
 
 eval_prompt_template = '''Please help me judge the correctness of the generated answer and the corresponding rationale. 
 Question: {}
@@ -114,10 +115,131 @@ class Action:
         return f"<Action: {self.text}>"
 
 
-class VisionLanguageModel:
+class Qwen2_5_VL_Embedder:
+    """Qwen2.5-VL vision encoder based embedding for multimodal input"""
     def __init__(self, model, processor):
         self.model = model
         self.processor = processor
+    
+    def embed(self, image_feat, text):
+        """
+        Extract vision and text embeddings from Qwen2.5-VL model
+        Returns: combined multimodal embedding
+        """
+        image = Image.open(io.BytesIO(image_feat))
+        
+        # Prepare inputs
+        message = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "image"},
+            ],
+        }]
+        
+        text_prompt = self.processor.apply_chat_template(
+            message, tokenize=False, add_generation_prompt=True
+        )
+        
+        inputs = self.processor(
+            text=[text_prompt],
+            images=image,
+            padding=True,
+            return_tensors="pt",
+        ).to(self.model.device)
+        
+        with torch.no_grad():
+            # Extract hidden states from the model
+            outputs = self.model(**inputs, output_hidden_states=True)
+            
+            # Get the last hidden state
+            hidden_states = outputs.hidden_states[-1]  # [batch, seq_len, hidden_dim]
+            
+            # Pool over sequence dimension (mean pooling)
+            pooled_output = hidden_states.mean(dim=1)  # [batch, hidden_dim]
+            
+            # Normalize
+            pooled_output = F.normalize(pooled_output, p=2, dim=-1)
+            
+        return pooled_output
+
+
+def monte_carlo_dropout_difficulty(model, processor, image_feat, text_context, n_samples=10):
+    """
+    Estimate input difficulty using Monte Carlo Dropout
+    
+    Args:
+        model: VLM model with dropout layers
+        processor: Model processor
+        image_feat: Image data
+        text_context: Text prompt
+        n_samples: Number of MC dropout samples
+        
+    Returns:
+        difficulty_score: Higher score = more difficult (0.0 to 1.0)
+        entropy: Prediction entropy across samples
+    """
+    # Enable dropout during inference
+    def enable_dropout(m):
+        if type(m) == nn.Dropout:
+            m.train()
+    
+    model.apply(enable_dropout)
+    
+    # Prepare inputs
+    prompt = text_context
+    message = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image"},
+        ],
+    }]
+    
+    text = processor.apply_chat_template(
+        message, tokenize=False, add_generation_prompt=True
+    )[:-32]
+    image_inputs = Image.open(io.BytesIO(image_feat))
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        padding=True,
+        return_tensors="pt",
+    ).to(model.device)
+    
+    # Collect predictions from multiple forward passes with dropout
+    logits_list = []
+    with torch.no_grad():
+        for _ in range(n_samples):
+            outputs = model(**inputs)
+            logits = outputs.logits[:, -1, :]  # Last token logits
+            probs = F.softmax(logits, dim=-1)
+            logits_list.append(probs.cpu())
+    
+    # Compute uncertainty metrics
+    logits_tensor = torch.stack(logits_list, dim=0)  # [n_samples, batch, vocab_size]
+    mean_probs = logits_tensor.mean(dim=0)  # Average predictions
+    
+    # Calculate prediction variance (epistemic uncertainty)
+    variance = logits_tensor.var(dim=0).mean().item()
+    
+    # Calculate entropy (aleatoric uncertainty)
+    entropy = -(mean_probs * torch.log(mean_probs + 1e-10)).sum(dim=-1).mean().item()
+    
+    # Normalize difficulty score (combine variance and entropy)
+    difficulty_score = min(1.0, (variance * 10 + entropy / 10))
+    
+    # Restore model to eval mode
+    model.eval()
+    
+    return difficulty_score, entropy
+
+
+class VisionLanguageModel:
+    def __init__(self, model, processor, clip_embedder=None):
+        self.model = model
+        self.processor = processor
+        self.clip_embedder = clip_embedder
 
     def _run_vlm(self, image_feat, text_context, generation_config, history=None):
 
@@ -269,7 +391,7 @@ class UCB:
 
 def mab_search(root_state, vlm, eval_llm, eval_llm_tokenizer, question, answer, generation_config,
                n_iterations, top_k=3, exploration_c=2.0, rollout_limit=2):
-    """Multi-armed bandit search over top_k proposed actions.
+    """Multi-armed bandit search over top_k proposed actions for a single problem.
 
     At each iteration, propose top_k actions from the current root state, pick one via UCB1,
     perform a short rollout, evaluate a binary reward, and update the bandit. If reward==1, stop.
@@ -311,76 +433,95 @@ def mab_search(root_state, vlm, eval_llm, eval_llm_tokenizer, question, answer, 
 
     return None, best_path, solution, n_iterations
 
-# class MCTSNode:
-#     def __init__(self, state):
-#         self.state = state
-#         self.children = {}  # dict(action -> MCTSNode)
-#         self.visit_count = 0
-#         self.value_sum = 0.0
-#         self.parent = None
-#         self.action_from_parent = None
 
-#     @property
-#     def value(self):
-#         if self.visit_count == 0:
-#             return 0.0
-#         return self.value_sum / self.visit_count
-
-
-# def ucb_score(parent, child, c_puct=1.0):
-#     if child.visit_count == 0:
-#         return float('inf')
-#     return (child.value
-#             + c_puct * math.sqrt(math.log(parent.visit_count) / (child.visit_count)))
-
-
-
-# def mcts_search(root_state, vlm, eval_llm, eval_llm_tokenizer, question, answer, generation_config, n_iterations,
-#                 c_puct=1.0, top_k=3):
-#     root_node = MCTSNode(root_state)
-#     solution = None
-
-#     for iter in range(n_iterations):
-#         node = root_node
-#         # Selection phase - traverse down the tree
-#         while not node.state.is_terminal and len(node.children) > 0:
-#             _, child = select_child(node, c_puct)
-#             node = child
-
-#         # Expansion phase - add new children if not terminal
-#         if not node.state.is_terminal:
-#             expand(node, vlm, generation_config, top_k=top_k)
-#             if len(node.children) > 0:
-#                 # Select the most promising child for simulation
-#                 best_action = max(node.children.keys(), key=lambda a: node.children[a].visit_count)
-#                 node = node.children[best_action]
-
-#         # Simulation phase - optimized for speed
-#         reward, simulate_state = simulate(node.state, vlm, eval_llm, eval_llm_tokenizer, question, answer,
-#                                           generation_config, rollout_limit=3)  # Reduced for faster processing
+class DifficultyBasedMAB:
+    """Multi-Armed Bandit for selecting which difficulty level to solve next"""
+    def __init__(self, difficulty_bins=3, exploration_c=2.0):
+        """
+        Args:
+            difficulty_bins: Number of difficulty levels (arms)
+                            e.g., 3 = [easy, medium, hard]
+            exploration_c: UCB exploration constant
+        """
+        self.difficulty_bins = difficulty_bins
+        self.bandit = UCB(n_arms=difficulty_bins, exploration_c=exploration_c)
+        self.difficulty_thresholds = self._compute_thresholds()
         
-#         # Early termination if we find a solution
-#         if reward == 1:
-#             solution = simulate_state
-#             break
-
-#         # Backpropagation phase
-#         backpropagate(node, reward)
-
-#     # Extract best path from root
-#     best_path = []
-#     current = root_node
-#     while not current.state.is_terminal and len(current.children) > 0:
-#         # Select child with highest visit count (most explored)
-#         best_child = max(current.children.values(), key=lambda c: c.visit_count)
-#         best_path.append(best_child.action_from_parent.text)
-#         current = best_child
-#     return root_node, best_path, solution, iter
+    def _compute_thresholds(self):
+        """Compute difficulty thresholds to divide [0, 1] into bins"""
+        return np.linspace(0, 1, self.difficulty_bins + 1)
+    
+    def assign_to_arm(self, difficulty_score):
+        """Assign a difficulty score to an arm (bin)"""
+        for i in range(self.difficulty_bins):
+            if self.difficulty_thresholds[i] <= difficulty_score < self.difficulty_thresholds[i + 1]:
+                return i
+        return self.difficulty_bins - 1  # Last bin for score = 1.0
+    
+    def select_difficulty_arm(self):
+        """Select which difficulty level to work on next using UCB"""
+        return self.bandit.select_arm()
+    
+    def update(self, arm_idx, reward):
+        """Update bandit statistics after solving a problem"""
+        self.bandit.update(arm_idx, reward)
+    
+    def get_arm_stats(self):
+        """Get statistics for each difficulty arm"""
+        stats = []
+        for i in range(self.difficulty_bins):
+            stats.append({
+                'arm': i,
+                'difficulty_range': f"[{self.difficulty_thresholds[i]:.2f}, {self.difficulty_thresholds[i+1]:.2f})",
+                'count': int(self.bandit.counts[i]),
+                'avg_reward': float(self.bandit.values[i]),
+            })
+        return stats
 
 def solve_math_reasoning_vlm(image_data, text_prompt, model, generation_config, processor, eval_llm,
                                 eval_llm_tokenizer, question, answer, n_iterations,
+                                clip_embedder=None, use_difficulty_adaptive=True,
                                 search_method='mab', top_k=3, c_puct=1.0, mab_c=2.0, rollout_limit=2):
     image_feat = image_data
+    
+    # Step 1: Compute CLIP embeddings if available
+    clip_embedding = None
+    if clip_embedder is not None:
+        clip_embedding = clip_embedder.embed(image_feat, question)
+        print(f"CLIP embedding shape: {clip_embedding.shape}")
+    
+    # Step 2: Estimate difficulty using Monte Carlo Dropout
+    difficulty_score = 0.5  # Default medium difficulty
+    entropy = 0.0
+    
+    if use_difficulty_adaptive:
+        try:
+            difficulty_score, entropy = monte_carlo_dropout_difficulty(
+                model=model,
+                processor=processor,
+                image_feat=image_feat,
+                text_context=text_prompt,
+                n_samples=10
+            )
+            print(f"Difficulty score: {difficulty_score:.3f}, Entropy: {entropy:.3f}")
+            
+            # Adaptive iteration count based on difficulty
+            # Easy problems (score < 0.3): use fewer iterations
+            # Medium problems (0.3 <= score < 0.7): use default iterations
+            # Hard problems (score >= 0.7): use more iterations
+            if difficulty_score < 0.3:
+                adapted_iterations = max(3, int(n_iterations * 0.6))
+                print(f"Easy problem detected, reducing iterations to {adapted_iterations}")
+            elif difficulty_score >= 0.7:
+                adapted_iterations = int(n_iterations * 1.5)
+                print(f"Hard problem detected, increasing iterations to {adapted_iterations}")
+            else:
+                adapted_iterations = n_iterations
+        except Exception as e:
+            print(f"Warning: Difficulty estimation failed: {e}. Using default iterations.")
+            adapted_iterations = n_iterations
+    else:
+        adapted_iterations = n_iterations
 
     init_state = State(
         image_feat=image_feat,
@@ -388,9 +529,9 @@ def solve_math_reasoning_vlm(image_data, text_prompt, model, generation_config, 
         solution_steps=[]
     )
 
-    vlm = VisionLanguageModel(model, processor)
+    vlm = VisionLanguageModel(model, processor, clip_embedder=clip_embedder)
 
-    # Always use MAB search
+    # Always use MAB search with difficulty-adapted iterations
     root, steps, solution, n_iter = mab_search(
         root_state=init_state,
         vlm=vlm,
@@ -399,12 +540,13 @@ def solve_math_reasoning_vlm(image_data, text_prompt, model, generation_config, 
         question=question,
         answer=answer,
         generation_config=generation_config,
-        n_iterations=n_iterations,
+        n_iterations=adapted_iterations,
         top_k=top_k,
         exploration_c=mab_c,
         rollout_limit=rollout_limit,
     )
-    return root, steps, solution, n_iter
+    
+    return root, steps, solution, n_iter, difficulty_score, clip_embedding
 
 
 def main(args):
@@ -428,7 +570,8 @@ def main(args):
         max_new_tokens=128,  # Reduced token limit for speed
     )
 
-    # Optimize model loading with better device handling
+    # Load Qwen2.5-VL model (will be used for both generation and embeddings)
+    print(f"Loading Qwen2.5-VL model: {args.model_id}...")
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model_id, 
         torch_dtype=torch.float16, 
@@ -438,6 +581,12 @@ def main(args):
         attn_implementation="flash_attention_2"  # Use flash attention for speed
     )
     processor = AutoProcessor.from_pretrained(args.model_id)
+    print("Qwen2.5-VL model loaded successfully")
+    
+    # Create embedder using the same model
+    vision_embedder = Qwen2_5_VL_Embedder(model, processor) if args.use_vision_embeddings else None
+    if vision_embedder:
+        print("Vision embedder initialized using Qwen2.5-VL encoder")
 
     eval_llm = AutoModelForCausalLM.from_pretrained(
         args.eval_model_name,
@@ -458,44 +607,138 @@ def main(args):
 
     data_chunk = get_chunk(datas, args.num_chunks, args.chunk_idx)
     
-    # Process in smaller batches to avoid memory issues
-    batch_size = 2  # Reduced batch size for better memory management
-    for i in tqdm(range(0, len(data_chunk), batch_size), desc="MAB Progress"):
-        batch = data_chunk[i:i+batch_size]
+    # Phase 1: Pre-compute difficulty scores for all samples
+    print("Phase 1: Computing difficulty scores for all samples...")
+    samples_with_difficulty = []
+    
+    for data in tqdm(data_chunk, desc="Computing difficulties"):
+        try:
+            image_data = data['image']
+            question = data['problem'].split('<image>')[1]
+            text_prompt = few_shot_cot_prompt + '{}'.format(question)
+            
+            # Compute difficulty score
+            difficulty_score, _ = monte_carlo_dropout_difficulty(
+                model=model,
+                processor=processor,
+                image_feat=image_data,
+                text_context=text_prompt,
+                n_samples=5  # Fewer samples for faster pre-processing
+            )
+            
+            # Get vision embedding if enabled
+            vision_emb = None
+            if vision_embedder:
+                vision_emb = vision_embedder.embed(image_data, question)
+            
+            samples_with_difficulty.append({
+                'data': data,
+                'difficulty': difficulty_score,
+                'vision_emb': vision_emb,
+                'image_data': image_data,
+                'question': question,
+                'answer': data['answer'],
+                'text_prompt': text_prompt
+            })
+            
+            if len(samples_with_difficulty) % 10 == 0:
+                torch.cuda.empty_cache()
+                
+        except Exception as e:
+            print(f"Error computing difficulty: {e}")
+            continue
+    
+    # Phase 2: Group samples by difficulty into arms
+    print(f"\nPhase 2: Grouping {len(samples_with_difficulty)} samples by difficulty...")
+    difficulty_mab = DifficultyBasedMAB(
+        difficulty_bins=args.difficulty_bins,
+        exploration_c=args.exploration_c
+    )
+    
+    # Assign samples to arms
+    arms = [[] for _ in range(args.difficulty_bins)]
+    for sample in samples_with_difficulty:
+        arm_idx = difficulty_mab.assign_to_arm(sample['difficulty'])
+        arms[arm_idx].append(sample)
+    
+    print("Difficulty distribution:")
+    for i, arm_samples in enumerate(arms):
+        thresholds = difficulty_mab.difficulty_thresholds
+        print(f"  Arm {i} [{thresholds[i]:.2f}, {thresholds[i+1]:.2f}): {len(arm_samples)} samples")
+    
+    # Phase 3: Use MAB to select which difficulty arm to solve
+    print(f"\nPhase 3: Solving problems with difficulty-based MAB...")
+    solved_indices = [set() for _ in range(args.difficulty_bins)]  # Track solved samples per arm
+    
+    for iteration in tqdm(range(len(samples_with_difficulty)), desc="MAB-guided solving"):
+        # Select which difficulty arm to work on
+        selected_arm = difficulty_mab.select_difficulty_arm()
         
-        for data in batch:
-            try:
-                image_data = data['image']
-                question = data['problem'].split('<image>')[1]
-                answer = data['answer']
-                text_prompt = few_shot_cot_prompt + '{}'.format(question)
-
-                root, solution_steps, solution, n_iter = solve_math_reasoning_vlm(
-                    image_data=image_data,
-                    text_prompt=text_prompt,
-                    model=model,
-                    generation_config=generation_config,
-                    processor=processor,
-                    eval_llm=eval_llm,
-                    eval_llm_tokenizer=eval_llm_tokenizer,
-                    question=question,
-                    answer=answer,
-                    n_iterations=args.max_num_iterations,
-                )
-
-                if solution is not None:
-                    data['solution'] = ''.join(solution.solution_steps)
-                    data['iters'] = n_iter
-                    final_response.append(data)
-                    
-                # Clear cache more frequently for better memory management
-                if len(final_response) % 5 == 0:
-                    torch.cuda.empty_cache()
-                    
-            except Exception as e:
-                print(f"Error processing sample: {e}")
-                # Continue with next sample instead of crashing
-                continue
+        # Find an unsolved sample from this arm
+        available_indices = [i for i in range(len(arms[selected_arm])) 
+                            if i not in solved_indices[selected_arm]]
+        
+        if not available_indices:
+            # This arm is exhausted, try other arms
+            continue
+        
+        # Pick a random sample from available ones in this arm
+        sample_idx = random.choice(available_indices)
+        sample = arms[selected_arm][sample_idx]
+        solved_indices[selected_arm].add(sample_idx)
+        
+        try:
+            # Solve the problem
+            root, solution_steps, solution, n_iter, _, _ = solve_math_reasoning_vlm(
+                image_data=sample['image_data'],
+                text_prompt=sample['text_prompt'],
+                model=model,
+                generation_config=generation_config,
+                processor=processor,
+                eval_llm=eval_llm,
+                eval_llm_tokenizer=eval_llm_tokenizer,
+                question=sample['question'],
+                answer=sample['answer'],
+                n_iterations=args.max_num_iterations,
+                clip_embedder=None,  # Already computed
+                use_difficulty_adaptive=False,  # Already computed
+            )
+            
+            # Compute reward (1 if solved, 0 otherwise)
+            reward = 1.0 if solution is not None else 0.0
+            
+            # Update MAB
+            difficulty_mab.update(selected_arm, reward)
+            
+            # Save successful solutions
+            if solution is not None:
+                result_data = sample['data'].copy()
+                result_data['solution'] = ''.join(solution.solution_steps)
+                result_data['iters'] = n_iter
+                result_data['difficulty_score'] = float(sample['difficulty'])
+                result_data['selected_arm'] = int(selected_arm)
+                if sample['vision_emb'] is not None:
+                    result_data['vision_embedding'] = sample['vision_emb'].cpu().numpy().tolist()
+                final_response.append(result_data)
+            
+            # Print stats periodically
+            if (iteration + 1) % 20 == 0:
+                print(f"\n--- Iteration {iteration + 1} Stats ---")
+                for stat in difficulty_mab.get_arm_stats():
+                    print(f"  Arm {stat['arm']} {stat['difficulty_range']}: "
+                          f"{stat['count']} samples, avg reward: {stat['avg_reward']:.3f}")
+                torch.cuda.empty_cache()
+                
+        except Exception as e:
+            print(f"Error solving sample: {e}")
+            difficulty_mab.update(selected_arm, 0.0)  # Count as failure
+            continue
+    
+    # Final statistics
+    print("\n=== Final Difficulty-based MAB Statistics ===")
+    for stat in difficulty_mab.get_arm_stats():
+        print(f"Arm {stat['arm']} {stat['difficulty_range']}: "
+              f"{stat['count']} samples, avg reward: {stat['avg_reward']:.3f}")
 
     df = pd.DataFrame(final_response)
     df.to_parquet(args.output_file, index=False, engine='pyarrow')
@@ -511,6 +754,21 @@ if __name__ == "__main__":
     parser.add_argument("--num-chunks", type=int, default=8)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--gpu-id", type=int, default=0)
+    
+    # New arguments for vision embeddings and difficulty estimation
+    parser.add_argument("--use-vision-embeddings", action="store_true", default=True,
+                        help="Extract vision embeddings from Qwen2.5-VL for multimodal representation")
+    parser.add_argument("--use-difficulty-adaptive", action="store_true", default=True,
+                        help="Use Monte Carlo Dropout to estimate difficulty and adapt iterations")
+    parser.add_argument("--mc-dropout-samples", type=int, default=10,
+                        help="Number of MC dropout samples for difficulty estimation")
+    
+    # Difficulty-based MAB arguments
+    parser.add_argument("--difficulty-bins", type=int, default=3,
+                        help="Number of difficulty bins (arms) for MAB: 3=[easy,medium,hard], 5=[very easy,...,very hard]")
+    parser.add_argument("--exploration-c", type=float, default=2.0,
+                        help="UCB exploration constant for difficulty-based MAB")
+    
     args = parser.parse_args()
 
     main(args)
