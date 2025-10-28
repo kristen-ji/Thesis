@@ -164,27 +164,26 @@ class Qwen2_5_VL_Embedder:
         return pooled_output
 
 
-def monte_carlo_dropout_difficulty(model, processor, image_feat, text_context, n_samples=10):
+def estimate_difficulty_from_confidence(model, processor, image_feat, text_context):
     """
-    Estimate input difficulty using Monte Carlo Dropout
+    Estimate input difficulty using model prediction confidence.
+    
+    Uses the top-1 prediction probability as a proxy for difficulty:
+    - High confidence (0.999) → Easy problem (low difficulty)
+    - Low confidence (0.5) → Hard problem (high difficulty)
     
     Args:
-        model: VLM model with dropout layers
+        model: VLM model
         processor: Model processor
-        image_feat: Image data
+        image_feat: Image data (bytes)
         text_context: Text prompt
-        n_samples: Number of MC dropout samples
         
     Returns:
         difficulty_score: Higher score = more difficult (0.0 to 1.0)
-        entropy: Prediction entropy across samples
+        confidence: Top-1 prediction probability (for debugging)
     """
-    # Enable dropout during inference
-    def enable_dropout(m):
-        if type(m) == nn.Dropout:
-            m.train()
-    
-    model.apply(enable_dropout)
+    # Ensure model is in eval mode
+    model.eval()
     
     # Prepare inputs
     prompt = text_context
@@ -207,32 +206,29 @@ def monte_carlo_dropout_difficulty(model, processor, image_feat, text_context, n
         return_tensors="pt",
     ).to(model.device)
     
-    # Collect predictions from multiple forward passes with dropout
-    logits_list = []
+    # Single forward pass to get prediction confidence
     with torch.no_grad():
-        for _ in range(n_samples):
-            outputs = model(**inputs)
-            logits = outputs.logits[:, -1, :]  # Last token logits
-            probs = F.softmax(logits, dim=-1)
-            logits_list.append(probs.cpu())
+        outputs = model(**inputs)
+        logits = outputs.logits[:, -1, :]  # Last token logits
+        probs = F.softmax(logits, dim=-1)
     
-    # Compute uncertainty metrics
-    logits_tensor = torch.stack(logits_list, dim=0)  # [n_samples, batch, vocab_size]
-    mean_probs = logits_tensor.mean(dim=0)  # Average predictions
+    # Check for NaN or Inf values
+    if torch.isnan(probs).any() or torch.isinf(probs).any():
+        return 0.5, 0.5
     
-    # Calculate prediction variance (epistemic uncertainty)
-    variance = logits_tensor.var(dim=0).mean().item()
+    # Get top-1 probability as confidence measure
+    top_prob = probs.max().item()
     
-    # Calculate entropy (aleatoric uncertainty)
-    entropy = -(mean_probs * torch.log(mean_probs + 1e-10)).sum(dim=-1).mean().item()
+    # Transform confidence to difficulty score
+    # Apply extremely aggressive transformation to spread out scores
+    # Models have very high confidence (0.98-0.9999), need maximum amplification
+    # Use exponential scaling: difficulty = (1 - top_prob)^0.08
+    # This maps: 0.9999->0.35, 0.999->0.47, 0.99->0.63, 0.95->0.79, 0.9->0.89
+    raw_difficulty = 1.0 - top_prob
+    # Add small epsilon to avoid numerical issues
+    difficulty_score = min(1.0, max(0.0, (raw_difficulty + 1e-10) ** 0.08))
     
-    # Normalize difficulty score (combine variance and entropy)
-    difficulty_score = min(1.0, (variance * 10 + entropy / 10))
-    
-    # Restore model to eval mode
-    model.eval()
-    
-    return difficulty_score, entropy
+    return difficulty_score, top_prob
 
 
 class VisionLanguageModel:
@@ -436,20 +432,37 @@ def mab_search(root_state, vlm, eval_llm, eval_llm_tokenizer, question, answer, 
 
 class DifficultyBasedMAB:
     """Multi-Armed Bandit for selecting which difficulty level to solve next"""
-    def __init__(self, difficulty_bins=3, exploration_c=2.0):
+    def __init__(self, difficulty_bins=3, exploration_c=2.0, adaptive_bins=True):
         """
         Args:
             difficulty_bins: Number of difficulty levels (arms)
                             e.g., 3 = [easy, medium, hard]
             exploration_c: UCB exploration constant
+            adaptive_bins: If True, compute thresholds based on data percentiles
         """
         self.difficulty_bins = difficulty_bins
         self.bandit = UCB(n_arms=difficulty_bins, exploration_c=exploration_c)
+        self.adaptive_bins = adaptive_bins
         self.difficulty_thresholds = self._compute_thresholds()
         
-    def _compute_thresholds(self):
+    def _compute_thresholds(self, difficulty_scores=None):
         """Compute difficulty thresholds to divide [0, 1] into bins"""
-        return np.linspace(0, 1, self.difficulty_bins + 1)
+        if self.adaptive_bins and difficulty_scores is not None:
+            # Use percentiles to create balanced bins
+            percentiles = np.linspace(0, 100, self.difficulty_bins + 1)
+            thresholds = np.percentile(difficulty_scores, percentiles)
+            # Ensure first is 0 and last is 1
+            thresholds[0] = 0.0
+            thresholds[-1] = 1.0
+            return thresholds
+        else:
+            # Uniform binning
+            return np.linspace(0, 1, self.difficulty_bins + 1)
+    
+    def update_thresholds(self, difficulty_scores):
+        """Update thresholds based on actual difficulty distribution"""
+        if self.adaptive_bins:
+            self.difficulty_thresholds = self._compute_thresholds(difficulty_scores)
     
     def assign_to_arm(self, difficulty_score):
         """Assign a difficulty score to an arm (bin)"""
@@ -481,29 +494,25 @@ class DifficultyBasedMAB:
 def solve_math_reasoning_vlm(image_data, text_prompt, model, generation_config, processor, eval_llm,
                                 eval_llm_tokenizer, question, answer, n_iterations,
                                 clip_embedder=None, use_difficulty_adaptive=True,
-                                search_method='mab', top_k=3, c_puct=1.0, mab_c=2.0, rollout_limit=2):
+                                search_method='mab', top_k=3, c_puct=1.0, mab_c=2.0, rollout_limit=5):
     image_feat = image_data
     
     # Step 1: Compute CLIP embeddings if available
     clip_embedding = None
     if clip_embedder is not None:
         clip_embedding = clip_embedder.embed(image_feat, question)
-        print(f"CLIP embedding shape: {clip_embedding.shape}")
     
-    # Step 2: Estimate difficulty using Monte Carlo Dropout
+    # Step 2: Estimate difficulty from model confidence
     difficulty_score = 0.5  # Default medium difficulty
-    entropy = 0.0
     
     if use_difficulty_adaptive:
         try:
-            difficulty_score, entropy = monte_carlo_dropout_difficulty(
+            difficulty_score, top_prob = estimate_difficulty_from_confidence(
                 model=model,
                 processor=processor,
                 image_feat=image_feat,
-                text_context=text_prompt,
-                n_samples=10
+                text_context=text_prompt
             )
-            print(f"Difficulty score: {difficulty_score:.3f}, Entropy: {entropy:.3f}")
             
             # Adaptive iteration count based on difficulty
             # Easy problems (score < 0.3): use fewer iterations
@@ -511,14 +520,11 @@ def solve_math_reasoning_vlm(image_data, text_prompt, model, generation_config, 
             # Hard problems (score >= 0.7): use more iterations
             if difficulty_score < 0.3:
                 adapted_iterations = max(3, int(n_iterations * 0.6))
-                print(f"Easy problem detected, reducing iterations to {adapted_iterations}")
             elif difficulty_score >= 0.7:
                 adapted_iterations = int(n_iterations * 1.5)
-                print(f"Hard problem detected, increasing iterations to {adapted_iterations}")
             else:
                 adapted_iterations = n_iterations
-        except Exception as e:
-            print(f"Warning: Difficulty estimation failed: {e}. Using default iterations.")
+        except Exception:
             adapted_iterations = n_iterations
     else:
         adapted_iterations = n_iterations
@@ -555,7 +561,6 @@ def main(args):
         device_count = torch.cuda.device_count()
         print(f"Available CUDA devices: {device_count}")
         if args.gpu_id >= device_count:
-            print(f"Warning: GPU {args.gpu_id} not available, using GPU 0")
             args.gpu_id = 0
         device = f"cuda:{args.gpu_id}"
         torch.cuda.set_device(args.gpu_id)
@@ -617,13 +622,12 @@ def main(args):
             question = data['problem'].split('<image>')[1]
             text_prompt = few_shot_cot_prompt + '{}'.format(question)
             
-            # Compute difficulty score
-            difficulty_score, _ = monte_carlo_dropout_difficulty(
+            # Compute difficulty score from model confidence
+            difficulty_score, top_prob = estimate_difficulty_from_confidence(
                 model=model,
                 processor=processor,
                 image_feat=image_data,
-                text_context=text_prompt,
-                n_samples=5  # Fewer samples for faster pre-processing
+                text_context=text_prompt
             )
             
             # Get vision embedding if enabled
@@ -644,16 +648,20 @@ def main(args):
             if len(samples_with_difficulty) % 10 == 0:
                 torch.cuda.empty_cache()
                 
-        except Exception as e:
-            print(f"Error computing difficulty: {e}")
+        except Exception:
             continue
     
     # Phase 2: Group samples by difficulty into arms
     print(f"\nPhase 2: Grouping {len(samples_with_difficulty)} samples by difficulty...")
     difficulty_mab = DifficultyBasedMAB(
         difficulty_bins=args.difficulty_bins,
-        exploration_c=args.exploration_c
+        exploration_c=args.exploration_c,
+        adaptive_bins=True  # Use adaptive binning based on data distribution
     )
+    
+    # Update thresholds based on actual difficulty distribution
+    all_difficulties = [s['difficulty'] for s in samples_with_difficulty]
+    difficulty_mab.update_thresholds(all_difficulties)
     
     # Assign samples to arms
     arms = [[] for _ in range(args.difficulty_bins)]
@@ -662,25 +670,46 @@ def main(args):
         arms[arm_idx].append(sample)
     
     print("Difficulty distribution:")
+    all_difficulties = [s['difficulty'] for s in samples_with_difficulty]
+    print(f"  Overall stats - Min: {min(all_difficulties):.3f}, Max: {max(all_difficulties):.3f}, Mean: {np.mean(all_difficulties):.3f}")
     for i, arm_samples in enumerate(arms):
         thresholds = difficulty_mab.difficulty_thresholds
-        print(f"  Arm {i} [{thresholds[i]:.2f}, {thresholds[i+1]:.2f}): {len(arm_samples)} samples")
+        if len(arm_samples) > 0:
+            arm_diffs = [s['difficulty'] for s in arm_samples]
+            avg_diff = np.mean(arm_diffs)
+            print(f"  Arm {i} [{thresholds[i]:.2f}, {thresholds[i+1]:.2f}): {len(arm_samples)} samples (avg difficulty: {avg_diff:.3f})")
+        else:
+            print(f"  Arm {i} [{thresholds[i]:.2f}, {thresholds[i+1]:.2f}): {len(arm_samples)} samples")
     
     # Phase 3: Use MAB to select which difficulty arm to solve
     print(f"\nPhase 3: Solving problems with difficulty-based MAB...")
     solved_indices = [set() for _ in range(args.difficulty_bins)]  # Track solved samples per arm
     
     for iteration in tqdm(range(len(samples_with_difficulty)), desc="MAB-guided solving"):
-        # Select which difficulty arm to work on
-        selected_arm = difficulty_mab.select_difficulty_arm()
+        # Select which difficulty arm to work on (try multiple times if arm is empty)
+        selected_arm = None
+        available_indices = []
         
-        # Find an unsolved sample from this arm
-        available_indices = [i for i in range(len(arms[selected_arm])) 
-                            if i not in solved_indices[selected_arm]]
+        # Try to find a non-empty arm (up to difficulty_bins attempts)
+        for attempt in range(args.difficulty_bins):
+            candidate_arm = difficulty_mab.select_difficulty_arm()
+            candidate_indices = [i for i in range(len(arms[candidate_arm])) 
+                                if i not in solved_indices[candidate_arm]]
+            
+            if candidate_indices:
+                # Found an arm with available samples
+                selected_arm = candidate_arm
+                available_indices = candidate_indices
+                break
+            else:
+                # This arm is empty, penalize it slightly and try another
+                # Give a small negative reward to discourage selecting empty arms
+                difficulty_mab.update(candidate_arm, 0.0)
         
-        if not available_indices:
-            # This arm is exhausted, try other arms
-            continue
+        if selected_arm is None or not available_indices:
+            # All arms are exhausted
+            print(f"\nAll arms exhausted at iteration {iteration + 1}/{len(samples_with_difficulty)}")
+            break
         
         # Pick a random sample from available ones in this arm
         sample_idx = random.choice(available_indices)
@@ -702,6 +731,7 @@ def main(args):
                 n_iterations=args.max_num_iterations,
                 clip_embedder=None,  # Already computed
                 use_difficulty_adaptive=False,  # Already computed
+                rollout_limit=args.rollout_limit,
             )
             
             # Compute reward (1 if solved, 0 otherwise)
@@ -729,8 +759,7 @@ def main(args):
                           f"{stat['count']} samples, avg reward: {stat['avg_reward']:.3f}")
                 torch.cuda.empty_cache()
                 
-        except Exception as e:
-            print(f"Error solving sample: {e}")
+        except Exception:
             difficulty_mab.update(selected_arm, 0.0)  # Count as failure
             continue
     
@@ -755,19 +784,19 @@ if __name__ == "__main__":
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--gpu-id", type=int, default=0)
     
-    # New arguments for vision embeddings and difficulty estimation
+    # Vision embeddings and difficulty estimation
     parser.add_argument("--use-vision-embeddings", action="store_true", default=True,
                         help="Extract vision embeddings from Qwen2.5-VL for multimodal representation")
     parser.add_argument("--use-difficulty-adaptive", action="store_true", default=True,
-                        help="Use Monte Carlo Dropout to estimate difficulty and adapt iterations")
-    parser.add_argument("--mc-dropout-samples", type=int, default=10,
-                        help="Number of MC dropout samples for difficulty estimation")
+                        help="Use model confidence to estimate difficulty and adapt iterations")
     
     # Difficulty-based MAB arguments
     parser.add_argument("--difficulty-bins", type=int, default=3,
                         help="Number of difficulty bins (arms) for MAB: 3=[easy,medium,hard], 5=[very easy,...,very hard]")
     parser.add_argument("--exploration-c", type=float, default=2.0,
                         help="UCB exploration constant for difficulty-based MAB")
+    parser.add_argument("--rollout-limit", type=int, default=5,
+                        help="Maximum number of rollout steps per MAB iteration")
     
     args = parser.parse_args()
 

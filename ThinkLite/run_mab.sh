@@ -3,13 +3,14 @@
 #SBATCH --partition=accelerated
 #SBATCH --job-name=ThinkLite_MAB
 #SBATCH --output=ThinkLite_MAB_%A_%a.log
+#SBATCH --error=ThinkLite_MAB_%A_%a.error
 #SBATCH --time=48:00:00  # Extended time limit for 70k dataset
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16  # Increased CPU cores
-#SBATCH --mem=100G  # Reduced memory allocation
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=100G
 
 #SBATCH --array=0-15  # Match the number of chunks (16 chunks)
 #SBATCH --account=hk-project-pai00072
@@ -57,4 +58,6 @@ python mab.py \
     --num-chunks $num_chunks \
     --chunk-idx $chunk_idx \
     --gpu-id 0 \
-    --max_num_iterations 8  # Optimized for speed vs quality balance
+    --max_num_iterations 5 \
+    --rollout-limit 5 \
+    --difficulty-bins 3

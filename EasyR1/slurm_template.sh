@@ -116,8 +116,8 @@ sleep 30
 echo "Checking Ray cluster status..."
 #ray status --address $ip_head --redis-password $redis_password
 
-# Make all GPUs visible to avoid vLLM import errors, but don't set specific device
-# Ray workers manage their own GPU assignments
-unset CUDA_VISIBLE_DEVICES
+# Make all GPUs visible to avoid vLLM import errors
+# Ray workers manage their own GPU assignments, but driver needs visibility
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 bash examples/qwen2_5_vl_7b_geo3k_grpo.sh
