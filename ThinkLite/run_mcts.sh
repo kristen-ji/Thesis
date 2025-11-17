@@ -12,7 +12,7 @@
 #SBATCH --mem=100G  # Reduced memory allocation
 
 #SBATCH --array=0-15  # Match the number of chunks (16 chunks)
-#SBATCH --account=hk-project-pai00072
+#SBATCH --account=hk-project-pai00089
 #SBATCH --priority=100
 
 # Load modules

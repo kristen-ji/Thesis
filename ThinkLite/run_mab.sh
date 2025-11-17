@@ -13,7 +13,7 @@
 #SBATCH --mem=100G
 
 #SBATCH --array=0-15  # Match the number of chunks (16 chunks)
-#SBATCH --account=hk-project-pai00072
+#SBATCH --account=hk-project-pai00089
 #SBATCH --priority=100
 
 # Load modules
@@ -45,6 +45,12 @@ if ! python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()
     exit 1
 fi
 
+# Check if OpenCLIP is installed (required for contextual MAB)
+if ! python -c "import open_clip; print('OpenCLIP version:', open_clip.__version__)" 2>/dev/null; then
+    echo "ERROR: open_clip not installed. Run: pip install open-clip-torch"
+    exit 1
+fi
+
 # Fix CUDA device mapping - ensure we use the correct GPU
 export CUDA_VISIBLE_DEVICES=0
 echo "Using GPU 0 for this job"
@@ -53,6 +59,7 @@ output_prefix="./output_files/mab_qwen_"
 num_chunks=16
 
 # Run MAB for this specific chunk with optimized parameters
+# Now uses CLIP embeddings + LinUCB contextual bandit
 python mab.py \
     --output_file ${output_prefix}$((chunk_idx+1)).parquet \
     --num-chunks $num_chunks \
@@ -60,4 +67,6 @@ python mab.py \
     --gpu-id 0 \
     --max_num_iterations 5 \
     --rollout-limit 5 \
-    --difficulty-bins 3
+    --difficulty-bins 3 \
+    --use-vision-embeddings \
+    --exploration-c 2.0

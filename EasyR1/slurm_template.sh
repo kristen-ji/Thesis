@@ -7,8 +7,8 @@
 #SBATCH --job-name=GRPO_7B_training
 #SBATCH --output=GRPO_7B_training_%A_%a.log
 #SBATCH --error=GRPO_7B_training_%A_%a.error
-#SBATCH --time=15:00:00
-#SBATCH --account=hk-project-pai00072
+#SBATCH --time=48:00:00
+#SBATCH --account=hk-project-pai00089
 
 
 ### This script works for any number of nodes, Ray will find and manage all resources
