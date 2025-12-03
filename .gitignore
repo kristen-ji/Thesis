@@ -1,9 +1,22 @@
 .wandb_token
 
+# Python cache
+__pycache__/
+*.pyc
+
+# ThinkLite runtime files
 ThinkLite/**/*.log
+ThinkLite/**/*.error
 ThinkLite/output_files/
+ThinkLite/mab_runs/
+ThinkLite/mcts_runs/
+ThinkLite/test_outputs/
+ThinkLite/*.npy
+
+# EasyR1 runtime files
 EasyR1/GRPO_7B_training_*.log
 EasyR1/GRPO_7B_training_*.error
+EasyR1/7B runs/
 EasyR1-New/EasyR1/*.log
 EasyR1-New/EasyR1/*.error
 **/*.parquet

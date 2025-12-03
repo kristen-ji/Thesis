@@ -1,72 +1,53 @@
 #!/bin/bash
-
 #SBATCH --partition=accelerated
 #SBATCH --job-name=ThinkLite_MAB
 #SBATCH --output=ThinkLite_MAB_%A_%a.log
 #SBATCH --error=ThinkLite_MAB_%A_%a.error
-#SBATCH --time=48:00:00  # Extended time limit for 70k dataset
-
+#SBATCH --time=48:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=100G
-
-#SBATCH --array=0-15  # Match the number of chunks (16 chunks)
+#SBATCH --array=0-15
 #SBATCH --account=hk-project-pai00089
-#SBATCH --priority=100
 
-# Load modules
 module load devel/cuda/12.9
 
-# Set environment variables for optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
-export CUDA_LAUNCH_BLOCKING=0
-export TORCH_USE_CUDA_DSA=1
-export OMP_NUM_THREADS=16
-export TOKENIZERS_PARALLELISM=false
-
-# Load Hugging Face token
 if [ -f ~/.hf_token ]; then
     export HUGGINGFACE_HUB_TOKEN=$(cat ~/.hf_token)
     export HF_TOKEN=$HUGGINGFACE_HUB_TOKEN
 fi
 
-# Create output directory
-mkdir -p output_files
+# Memory optimization for PyTorch - reduce fragmentation
+# Based on https://docs.pytorch.org/docs/stable/notes/cuda.html#environment-variables
+# expandable_segments: reduces fragmentation by allowing segments to grow
+# max_split_size_mb: limits max allocation size to reduce fragmentation
+# roundup_power2_divisions: rounds up allocations to reduce fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:64,roundup_power2_divisions:2
 
-# Get the array task ID (0-15)
-chunk_idx=$SLURM_ARRAY_TASK_ID
-
-
-# Check if CUDA is available and fix device mapping
-if ! python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}')"; then
-    echo "ERROR: CUDA not available in Python"
-    exit 1
-fi
-
-# Check if OpenCLIP is installed (required for contextual MAB)
-if ! python -c "import open_clip; print('OpenCLIP version:', open_clip.__version__)" 2>/dev/null; then
-    echo "ERROR: open_clip not installed. Run: pip install open-clip-torch"
-    exit 1
-fi
-
-# Fix CUDA device mapping - ensure we use the correct GPU
 export CUDA_VISIBLE_DEVICES=0
-echo "Using GPU 0 for this job"
 
-output_prefix="./output_files/mab_qwen_"
+chunk_idx=$SLURM_ARRAY_TASK_ID
 num_chunks=16
 
-# Run MAB for this specific chunk with optimized parameters
-# Now uses CLIP embeddings + LinUCB contextual bandit
+# LoRA reduces trainable parameters from ~7B to ~10-50M (100-700x reduction)
+# This dramatically reduces optimizer state memory from ~28GB to ~40-200MB
 python mab.py \
-    --output_file ${output_prefix}$((chunk_idx+1)).parquet \
-    --num-chunks $num_chunks \
-    --chunk-idx $chunk_idx \
-    --gpu-id 0 \
-    --max_num_iterations 5 \
-    --rollout-limit 5 \
-    --difficulty-bins 3 \
-    --use-vision-embeddings \
-    --exploration-c 2.0
+  --model_id Qwen/Qwen2.5-VL-7B-Instruct \
+  --gpu-id 0 \
+  --num-chunks $num_chunks \
+  --chunk-idx $chunk_idx \
+  --batch-size 1 \
+  --n-steps 1000 \
+  --lr 1e-5 \
+  --tau 0.1 \
+  --tau-decay 0.999 \
+  --predictor-path predictor.pt \
+  --output-model-path qwen_mab_chunk_${chunk_idx}.pt \
+  --use-lora \
+  --use-8bit \
+  --lora-r 8 \
+  --lora-alpha 16 \
+  --lora-dropout 0.05 \
+  --max-length 256
